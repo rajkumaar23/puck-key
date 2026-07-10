@@ -5,12 +5,22 @@ A [Puck.js](https://www.puck-js.com/) button that unlocks a
 receiver verifies it over BLE → the ESP32 calls the SmartRent cloud API to
 unlock the door. Typical press-to-unlock is well under a couple of seconds.
 
-```
-┌──────────┐   BLE: rolling code   ┌───────────┐   HTTPS: unlock PATCH   ┌────────────┐
-│ Puck.js  │ ────────────────────▶ │  ESP32    │ ──────────────────────▶ │ SmartRent  │
-│  fob     │   (HMAC-SHA256/TOTP)  │ receiver  │   (kept-warm TLS)       │  cloud API │
-└──────────┘                       └───────────┘                         └────────────┘
-```
+<table align="center">
+  <tr valign="middle">
+    <td align="center"><img src="docs/images/puckjs.jpeg" alt="Puck.js" height="80"></td>
+    <td align="center">&#10132;</td>
+    <td align="center"><img src="docs/images/esp32.jpg" alt="ESP32" height="80"></td>
+    <td align="center">&#10132;</td>
+    <td align="center"><img src="docs/images/smartrent.jpeg" alt="SmartRent" height="80"></td>
+  </tr>
+  <tr valign="middle">
+    <td align="center"><b>Puck.js fob</b><br><sub>button press</sub></td>
+    <td align="center"><sub>BLE<br>rolling code</sub></td>
+    <td align="center"><b>ESP32 receiver</b><br><sub>verify &amp; unlock</sub></td>
+    <td align="center"><sub>HTTPS<br>unlock PATCH</sub></td>
+    <td align="center"><b>SmartRent</b><br><sub>cloud API</sub></td>
+  </tr>
+</table>
 
 ## How it works
 
@@ -26,34 +36,23 @@ unlock the door. Typical press-to-unlock is well under a couple of seconds.
 - **Uptime heartbeat (optional).** The receiver can push a liveness ping to an
   [Uptime Kuma](https://github.com/louislam/uptime-kuma) monitor.
 
-## Layout
-
-```
-receiver/            ESP32 Arduino sketch
-  receiver.ino         setup/loop, BLE server, orchestration
-  config.h             non-secret tunables
-  secrets.h.example    credentials template -> copy to secrets.h (gitignored)
-  crypto.{h,cpp}       HMAC, base32, TOTP helpers
-  ble_auth.{h,cpp}     rolling-code verification
-  smartrent.{h,cpp}    SmartRent login (+2FA), token refresh, unlock PATCH
-fob/
-  puck.js              button handler + rolling code
-  provision.example.js one-time flash setup -> copy to provision.js (gitignored)
-```
-
 ## Setup
 
 ### Receiver (ESP32)
 
-Tested on an ESP32-S3 board with an on-board NeoPixel (status LED).
+Built for the **Adafruit QT Py ESP32 Pico** (8 MB flash, 2 MB PSRAM), using its
+on-board NeoPixel as the status LED. Any ESP32 with a NeoPixel works; boards
+without one just won't show LED status.
 
-1. Arduino IDE with the ESP32 core. Install libraries: **NimBLE-Arduino** and
-   **Adafruit NeoPixel**.
+1. In the Arduino IDE, install the ESP32 core and select **Adafruit QT Py ESP32
+   Pico** as the board. Install libraries: **NimBLE-Arduino** and **Adafruit
+   NeoPixel**.
 2. `cp receiver/secrets.h.example receiver/secrets.h` and fill in your values:
    - WiFi credentials.
    - SmartRent email/password.
    - `SR_HUB_ID` from `GET /api/v3/units` → `hub_id`, and `SR_DEVICE_ID` from
-     `GET /api/v3/hubs/<hub>/devices` → your lock's `id`.
+     `GET /api/v3/hubs/<hub>/devices` → your lock's `id`. SmartRent has no official
+     public API; these endpoints are documented in [homebridge-smartrent](https://github.com/BitWise-0x/homebridge-smartrent/blob/main/src/lib/request.ts).
    - `SR_TFA_SECRET`: the base32 TOTP seed from SmartRent 2FA (leave the
      placeholder if 2FA is off).
    - `SECRET`: a high-entropy shared secret (also goes on the fob).
@@ -78,3 +77,13 @@ failure.
 - The fob's clock drives the rolling code; if it drifts out of the window, re-run
   the `setTime(...)` line from provisioning, or widen `TOTP_WINDOW` on the receiver.
 - `secrets.h` and `provision.js` are gitignored so no credentials are committed.
+
+## References
+
+- **SmartRent API endpoints** (unofficial) — enumerated in the
+  [homebridge-smartrent](https://github.com/BitWise-0x/homebridge-smartrent)
+  source: [`request.ts`](https://github.com/BitWise-0x/homebridge-smartrent/blob/main/src/lib/request.ts)
+  (URLs) and [`api.ts`](https://github.com/BitWise-0x/homebridge-smartrent/blob/main/src/lib/api.ts)
+  (unit/hub/device calls).
+- [Espruino / Puck.js docs](https://www.espruino.com/Puck.js)
+- [Adafruit QT Py ESP32 Pico](https://learn.adafruit.com/adafruit-qt-py-esp32-pico)
