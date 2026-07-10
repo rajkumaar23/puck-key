@@ -1,0 +1,6 @@
+# Local secrets — copy the .example templates and fill in your own values.
+receiver/secrets.h
+fob/provision.js
+
+# OS / editor junk
+.DS_Store
