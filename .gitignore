@@ -2,5 +2,8 @@
 receiver/secrets.h
 fob/provision.js
 
+# Host test build output (test/build_and_run_tests.sh)
+test/notify_test
+
 # OS / editor junk
 .DS_Store
