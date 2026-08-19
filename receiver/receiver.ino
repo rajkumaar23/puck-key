@@ -33,6 +33,7 @@ void setLED(uint8_t r, uint8_t g, uint8_t b) {
 volatile bool doUnlock = false;
 volatile bool prewarm = false;         // set by onConnect -> loop() warms the TLS socket
 volatile bool needAdvertise = false;
+volatile bool authFailed = false;      // set by onWrite -> loop() fires the alert (never from the GATT task)
 volatile bool clientConnected = false;
 unsigned long tConnect = 0;
 uint16_t connHandle = 0;
@@ -104,9 +105,10 @@ class RespCallbacks : public NimBLECharacteristicCallbacks {
     if (v.length() == 32) {
       if (bleCodeValid(v.data())) { stamp("authenticated"); doUnlock = true; }
       else {
+        // Flag only: loop() fires the alert. notifyAlert() must not run from
+        // a GATT callback (TLS stall on the NimBLE task + race on ncore state).
         stamp("AUTH FAILED (bad/expired code)"); LED_FAIL();
-        notifyAlert("auth", "fob rejected: bad or expired rolling code",
-                    "check the fob clock (re-run provisioning setTime) or SECRET", 60);
+        authFailed = true;
       }
     } else stamp("bad code length");
   }
@@ -216,6 +218,11 @@ void loop() {
   if (needAdvertise) { needAdvertise = false; NimBLEDevice::startAdvertising(); }
   if (prewarm)       { prewarm = false;       smartrentPrewarm(); }   // warm during the BLE write
   if (doUnlock)      { doUnlock = false;      performUnlock(); }
+  if (authFailed) {
+    authFailed = false;
+    notifyAlert("auth", "fob rejected: bad or expired rolling code",
+                "check the fob clock (re-run provisioning setTime) or SECRET", 60);
+  }
 
 #ifdef HEARTBEAT_URL
   static unsigned long lastPush = 0;
