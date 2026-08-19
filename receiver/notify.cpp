@@ -20,6 +20,7 @@
 
 #include "notify.h"
 #include "notify_core.h"
+#include "secrets.h"      // TG_BOT_TOKEN / TG_CHAT_ID (same TU-independence as receiver.ino)
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -28,13 +29,26 @@
 #include "esp_system.h"   // esp_reset_reason()
 
 // Credentials from secrets.h. Build still works if you omit either one:
-// empty token == alerts silently disabled.
+// empty token == alerts disabled (announced once on the console).
 #ifndef TG_BOT_TOKEN
 #define TG_BOT_TOKEN ""
 #endif
 #ifndef TG_CHAT_ID
 #define TG_CHAT_ID ""
 #endif
+
+// Announce once per boot whether alerting is actually armed, so a missing
+// secret never fails silently.
+static void tgAnnounce() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  if (TG_BOT_TOKEN[0] && TG_CHAT_ID[0]) {
+    Serial.println("[notify] Telegram alerts enabled");
+  } else {
+    Serial.println("[notify] Telegram alerts DISABLED - set TG_BOT_TOKEN / TG_CHAT_ID in secrets.h");
+  }
+}
 
 static const char* EMOJI_FAIL = "\U0001F534";   // red circle
 static const char* EMOJI_OK   = "\U0001F7E2";   // green circle
@@ -150,6 +164,7 @@ void notifyPump() {
 }
 
 void notifyBoot() {
+  tgAnnounce();
   // Best effort: if WiFi is up it delivers now; otherwise the queue carries it
   // to the first successful send (usually right after the link recovers).
   std::string detail = std::string("reset reason: ") +
