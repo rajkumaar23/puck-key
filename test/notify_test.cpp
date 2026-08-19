@@ -28,6 +28,13 @@ static void test_rate_limiter_first_fires() {
   CHECK(notSent("wifi") == false);             // now flagged failed
 }
 
+// Regression: on a FRESH State (no reset() call - exactly the firmware's
+// shared function-local static at boot) every tag must be resolvable and
+// alert() must fire. Without the State() constructor these were all null
+// tags and tag-based alerts silently no-oped on device.
+// (Covered by the standalone boot_state_regression.cpp; kept here as a
+// lightweight reminder that reset() is not a prerequisite for the shared st().)
+
 static void test_rate_limiter_suppresses_within_window() {
   reset();
   CHECK(alert("wifi", 0, 2) == true);

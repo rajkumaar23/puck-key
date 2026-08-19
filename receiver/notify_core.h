@@ -84,18 +84,30 @@ struct State {
   char      sig[QUEUE_CAP][SIG_MAX];
   int       qhead  = 0;   // index of the oldest pending message
   int       qcount = 0;
+
+  // Self-initialize the tag table so a fresh instance is usable WITHOUT a
+  // reset() call. The firmware's shared State is a function-local static and
+  // never goes through reset() on device; the tags must be set at
+  // construction or every tag-based alert silently no-ops.
+  State() {
+    static const char* tags[SLOT_COUNT] =
+        {"wifi", "ntp", "login", "unlock", "auth", "heap"};
+    for (int i = 0; i < SLOT_COUNT; i++) {
+      slots[i].tag    = tags[i];
+      slots[i].failed = false;
+      slots[i].last   = 0;
+    }
+  }
 };
 
 // Single shared instance (function-local static = one per binary).
 inline State& st() { static State s; return s; }
 
-// (Re)initialize all state. Called by tests between cases and at boot.
+// (Re)initialize all *runtime* state (failed flags, timers, queue). The tag
+// table is set by the State constructor. Called by tests between cases.
 inline void reset() {
-  static const char* tags[SLOT_COUNT] =
-      {"wifi", "ntp", "login", "unlock", "auth", "heap"};
   State& S = st();
   for (int i = 0; i < SLOT_COUNT; i++) {
-    S.slots[i].tag   = tags[i];
     S.slots[i].failed = false;
     S.slots[i].last   = 0;
   }

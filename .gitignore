@@ -4,6 +4,7 @@ fob/provision.js
 
 # Host test build output (test/build_and_run_tests.sh)
 test/notify_test
+test/boot_state_regression
 
 # OS / editor junk
 .DS_Store
