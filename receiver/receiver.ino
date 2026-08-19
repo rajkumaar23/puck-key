@@ -184,8 +184,9 @@ static unsigned long wifiLastBegin = 0;
 // recover WiFi after a dropout.
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
-    // Reconnect; alert at 2 min until this is resolved. Don't re-begin while the
-    // stack is still starting (setup's 60 s wait or a loop re-begin covers it).
+    // Reconnect; alert at 2 min until this is resolved. The 15 s gate only
+    // limits redundant explicit WiFi.begin() calls - the ESP32 core keeps
+    // trying on its own while disconnected.
     if (millis() - wifiLastBegin > 15000) {
       wifiLastBegin = millis();
       WiFi.begin(WIFI_SSID, WIFI_PASS);
