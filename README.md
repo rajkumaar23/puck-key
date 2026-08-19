@@ -35,6 +35,11 @@ unlock the door. Typical press-to-unlock is well under a couple of seconds.
   than a fresh handshake.
 - **Uptime heartbeat (optional).** The receiver can push a liveness ping to an
   [Uptime Kuma](https://github.com/louislam/uptime-kuma) monitor.
+- **Telegram failure alerts (optional).** Anything the receiver notices —
+  reboot/crash (with reset reason), WiFi loss/recovery, NTP clock failure,
+  SmartRent login/token-refresh failure, unlock failure, fob auth rejection,
+  or dangerously low free heap — is pushed to a Telegram bot, rate-limited per
+  category, with a "recovered" message when it clears.
 
 ## Setup
 
@@ -56,6 +61,9 @@ without one just won't show LED status.
    - `SR_TFA_SECRET`: the base32 TOTP seed from SmartRent 2FA (leave the
      placeholder if 2FA is off).
    - `SECRET`: a high-entropy shared secret (also goes on the fob).
+   - `TG_BOT_TOKEN` / `TG_CHAT_ID`: optional — set these to get Telegram
+     alerts on any failure (create a bot via @BotFather; send it one message
+     and read your chat id from `getUpdates`). Empty token = disabled.
    - `HEARTBEAT_URL`: optional — comment it out to disable the heartbeat.
 3. Flash `receiver/`. Note the `BLE address:` it prints on boot — the fob needs it.
 

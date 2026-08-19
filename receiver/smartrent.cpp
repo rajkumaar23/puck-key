@@ -7,6 +7,7 @@
 #include "config.h"
 #include "secrets.h"
 #include "crypto.h"
+#include "notify.h"
 
 static String srToken = "";
 static time_t srTokenExp = 0;    // epoch seconds when the current access token expires
@@ -161,6 +162,11 @@ void smartrentMaintainToken() {
   lastAttempt = millis();
   Serial.printf("[token] refreshing (free heap=%u)\n", ESP.getFreeHeap());
   srNet.stop();   // free the warm socket's TLS memory so the login handshake has room
-  if (smartrentLogin()) Serial.printf("[token] refreshed, valid for %ld s\n", (long)(srTokenExp - now));
-  else                  Serial.println("[token] refresh FAILED");
+  if (smartrentLogin()) {
+    Serial.printf("[token] refreshed, valid for %ld s\n", (long)(srTokenExp - now));
+  } else {
+    Serial.println("[token] refresh FAILED");
+    notifyAlert("login", "SmartRent login failing",
+                "token expired and refresh keeps failing - unlocks will 401 until fixed (creds, TFA seed, Cloudflare?)", 15);
+  }
 }
