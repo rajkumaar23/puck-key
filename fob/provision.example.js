@@ -17,7 +17,11 @@ require("Storage").writeJSON("cfg", {
   door:   "aa:bb:cc:dd:ee:ff public"
 });
 
-// The rolling code is time-based, so the Puck needs a real UTC clock. The Web IDE
-// evaluates Date.now() with your computer's clock; the coin cell keeps it running.
-// Re-run this line if the fob loses power or drifts out of the receiver's window.
-setTime(Date.now() / 1000);
+// The rolling code is time-based, so the Puck needs a real UTC clock. NOTE:
+// code pasted into the Web IDE console runs ON THE PUCK, so
+// setTime(Date.now()/1000) would set the clock to its own drifted value -
+// a no-op. Paste a literal timestamp generated on your computer instead:
+//   Terminal:  echo "setTime($(date +%s));"
+//   then paste the printed line here.
+// Re-run whenever the fob has sat unused for hours (its idle RTC drifts).
+setTime(PASTE_UNIX_SECONDS_HERE);

@@ -75,7 +75,11 @@ without one just won't show LED status.
 1. Open the [Espruino Web IDE](https://www.espruino.com/ide/) and connect to the Puck.
 2. `cp fob/provision.example.js fob/provision.js`, set `secret` (matching the
    receiver's `SECRET`) and `door` (the receiver's BLE address). Paste/run it once
-   in the console — it also sets the Puck's clock.
+   in the console. Then set the clock with a literal timestamp from your computer
+   — `echo "setTime($(date +%s));"` in Terminal, paste the printed line into the
+   console. (Pasting `setTime(Date.now()/1000)` does nothing: console code runs
+   on the Puck, so that just re-sets its own drifted clock.) The Puck's idle RTC
+   drifts, so re-run the `setTime(...)` line after the fob has sat for hours.
 3. Upload `fob/puck.js` as the saved program.
 
 Press the button: the LED blinks green when the code is sent, red on a connection

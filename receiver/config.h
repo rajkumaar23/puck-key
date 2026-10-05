@@ -18,7 +18,10 @@
 #define SERVICE_UUID "f1e2d3c4-0001-4a5b-8c9d-000000000001"
 #define RESP_UUID    "f1e2d3c4-0003-4a5b-8c9d-000000000001"  // fob writes the rolling code here
 #define TOTP_STEP     30   // seconds per rolling-code window (MUST match the fob's STEP)
-#define TOTP_WINDOW    1   // also accept +/- this many windows (fob<->ESP32 clock skew)
+// +/- windows accepted. The Puck's idle RTC drifts, so the fob clock must be
+// kept fresh with the provisioning setTime line; this covers the skew between
+// re-syncs plus button-press latency.
+#define TOTP_WINDOW    2
 #define BLE_STALE_MS 4000  // drop a fob connection that lingers this long without authing
 
 // ---- Uptime heartbeat --------------------------------------------------------
