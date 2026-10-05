@@ -49,8 +49,11 @@ Built for the **Adafruit QT Py ESP32 Pico** (8 MB flash, 2 MB PSRAM), using its
 on-board NeoPixel as the status LED. Any ESP32 with a NeoPixel works; boards
 without one just won't show LED status.
 
-1. In the Arduino IDE, install the ESP32 core and select **Adafruit QT Py ESP32
-   Pico** as the board. Install libraries: **NimBLE-Arduino** and **Adafruit
+1. In the Arduino IDE, install **ESP32 core 3.0.7** (Boards Manager → "esp32 by
+   Espressif" → pick version 3.0.7) and select **Adafruit QT Py ESP32 Pico** as
+   the board. Core 3.1.0 and newer overflow the ESP32's IRAM at link time
+   (`iram0_0_seg` region overflow) once NimBLE + WiFi + TLS are linked in, so
+   pin the version. Install libraries: **NimBLE-Arduino** and **Adafruit
    NeoPixel**.
 2. `cp receiver/secrets.h.example receiver/secrets.h` and fill in your values:
    - WiFi credentials.
