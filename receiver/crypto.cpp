@@ -14,7 +14,7 @@ void hmacSha1(const uint8_t* key, size_t keyLen,
   mbedtls_md_free(&ctx);
 }
 
-// HMAC-SHA256 over msg with key -> 32-byte out (used by the BLE rolling code).
+// HMAC-SHA256 over msg with key -> 32-byte out (used by the BLE challenge-response).
 void hmacSha256(const uint8_t* key, size_t keyLen,
                 const uint8_t* msg, size_t msgLen, uint8_t out[32]) {
   mbedtls_md_context_t ctx;
@@ -46,7 +46,7 @@ int base32Decode(const char* in, uint8_t* out, size_t outCap) {
   return (int)count;
 }
 
-// Encode a counter as 8 big-endian bytes (the HMAC message for TOTP/rolling code).
+// Encode a counter as 8 big-endian bytes (the HMAC message for TOTP).
 void counterBytes(uint64_t counter, uint8_t out[8]) {
   for (int i = 7; i >= 0; i--) { out[i] = counter & 0xFF; counter >>= 8; }
 }

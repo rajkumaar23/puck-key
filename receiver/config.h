@@ -16,12 +16,8 @@
 // is deliberately NOT advertised (no name, no service UUID in the ad) to avoid
 // telling passive scanners that this device is a door lock.
 #define SERVICE_UUID "f1e2d3c4-0001-4a5b-8c9d-000000000001"
-#define RESP_UUID    "f1e2d3c4-0003-4a5b-8c9d-000000000001"  // fob writes the rolling code here
-#define TOTP_STEP     30   // seconds per rolling-code window (MUST match the fob's STEP)
-// +/- windows accepted. The Puck's idle RTC drifts, so the fob clock must be
-// kept fresh with the provisioning setTime line; this covers the skew between
-// re-syncs plus button-press latency.
-#define TOTP_WINDOW    2
+#define CHAL_UUID    "f1e2d3c4-0002-4a5b-8c9d-000000000001"  // fob reads the 16-byte challenge here
+#define RESP_UUID    "f1e2d3c4-0003-4a5b-8c9d-000000000001"  // fob writes HMAC(SECRET, challenge) here
 #define BLE_STALE_MS 4000  // drop a fob connection that lingers this long without authing
 
 // ---- Uptime heartbeat --------------------------------------------------------

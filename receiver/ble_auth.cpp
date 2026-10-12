@@ -1,24 +1,35 @@
 #include "ble_auth.h"
-#include <Arduino.h>
-#include <time.h>
-#include <string.h>
-#include "crypto.h"
-#include "config.h"
+#include "auth_core.h"
+#include "crypto.h"        // hmacSha256 (mbedTLS) — used by auth_core via the shim below
 #include "secrets.h"
+#include "esp_system.h"    // esp_fill_random
+
+// auth_core.h expects a platform-provided HMAC-SHA256; on the ESP32 that's
+// crypto.cpp's mbedTLS wrapper.
+namespace authcore {
+void hmacSha256(const uint8_t* key, size_t keyLen,
+                const uint8_t* msg, size_t msgLen, uint8_t out[32]) {
+  ::hmacSha256(key, keyLen, msg, msgLen, out);
+}
+}
 
 static const size_t SECRET_LEN = sizeof(SECRET) - 1;   // drop trailing null
+static authcore::ChallengeAuth g_auth;
 
-// Recompute the expected rolling code for the current time window (and +/- WINDOW
-// for clock skew) and constant-length-compare it against what the fob wrote.
-bool bleCodeValid(const uint8_t* code) {
-  time_t now = time(nullptr);
-  if (now < 1000000000) return false;                  // no valid clock yet -> can't verify
-  uint64_t base = (uint64_t)(now / TOTP_STEP);
-  for (int w = -TOTP_WINDOW; w <= TOTP_WINDOW; w++) {
-    uint8_t msg[8]; counterBytes(base + w, msg);
-    uint8_t expected[32];
-    hmacSha256((const uint8_t*)SECRET, SECRET_LEN, msg, 8, expected);
-    if (memcmp(expected, code, 32) == 0) return true;
-  }
-  return false;
+// Fresh 16 random bytes from the ESP32 hardware TRNG, single-use from here on.
+void bleAuthArm() {
+  uint8_t chal[authcore::CHAL_LEN];
+  esp_fill_random(chal, sizeof(chal));   // void return: no failure status to check
+  g_auth.arm(chal);
 }
+
+const uint8_t* bleAuthChallenge() {
+  return g_auth.isArmed() ? g_auth.challenge() : nullptr;
+}
+
+bool bleAuthVerify(const uint8_t* resp, size_t len) {
+  return g_auth.verify((const uint8_t*)SECRET, SECRET_LEN, resp, len) ==
+         authcore::Result::Ok;
+}
+
+void bleAuthClear() { g_auth.clear(); }

@@ -15,7 +15,7 @@ unlock the door. Typical press-to-unlock is well under a couple of seconds.
   </tr>
   <tr valign="middle">
     <td align="center"><b>Puck.js fob</b><br><sub>button press</sub></td>
-    <td align="center"><sub>BLE<br>rolling code</sub></td>
+    <td align="center"><sub>BLE challenge-<br>response</sub></td>
     <td align="center"><b>ESP32 receiver</b><br><sub>verify &amp; unlock</sub></td>
     <td align="center"><sub>HTTPS<br>unlock PATCH</sub></td>
     <td align="center"><b>SmartRent</b><br><sub>cloud API</sub></td>
@@ -24,11 +24,13 @@ unlock the door. Typical press-to-unlock is well under a couple of seconds.
 
 ## How it works
 
-- **Fob → receiver (BLE).** On a button press the fob connects and writes a
-  32-byte time-based rolling code — `HMAC-SHA256(SECRET, floor(unixtime / 30))`.
-  The receiver recomputes it (±1 window for clock skew) and only proceeds on a
-  match, so a sniffed code expires in ~30–60 s. The receiver advertises
-  anonymously (no name / service UUID) so a passive scan can't identify it.
+- **Fob → receiver (BLE).** On a button press the fob connects, reads a fresh
+  16-byte random challenge off the receiver, and writes back
+  `HMAC-SHA256(SECRET, challenge)`. The receiver recomputes the same HMAC and
+  only proceeds on a match. Each challenge is single-use — a sniffed exchange
+  can't be replayed — and nothing depends on either device's clock. The
+  receiver advertises anonymously (no name / service UUID) so a passive scan
+  can't identify it.
 - **Receiver → SmartRent (HTTPS).** The receiver logs in to SmartRent (handling
   TOTP 2FA), keeps the access token refreshed ahead of expiry, and holds a
   **pre-warmed TLS socket** so the unlock is just the request (~200 ms) rather
@@ -75,22 +77,20 @@ without one just won't show LED status.
 1. Open the [Espruino Web IDE](https://www.espruino.com/ide/) and connect to the Puck.
 2. `cp fob/provision.example.js fob/provision.js`, set `secret` (matching the
    receiver's `SECRET`) and `door` (the receiver's BLE address). Paste/run it once
-   in the console. Then set the clock with a literal timestamp from your computer
-   — `echo "setTime($(date +%s));"` in Terminal, paste the printed line into the
-   console. (Pasting `setTime(Date.now()/1000)` does nothing: console code runs
-   on the Puck, so that just re-sets its own drifted clock.) The Puck's idle RTC
-   drifts, so re-run the `setTime(...)` line after the fob has sat for hours.
+   in the console. No clock setup needed — auth is challenge-response, so the
+   Puck's drifting RTC doesn't affect unlocking.
 3. Upload `fob/puck.js` as the saved program.
 
-Press the button: the LED blinks green when the code is sent, red on a connection
-failure.
+Press the button: the LED blinks green when the response is sent, red on a
+connection or protocol failure.
 
 ## Security notes
 
-- The rolling code is replay-resistant but not a substitute for building
-  security — treat it as a convenience key for an already-secured entrance.
-- The fob's clock drives the rolling code; if it drifts out of the window, re-run
-  the `setTime(...)` line from provisioning, or widen `TOTP_WINDOW` on the receiver.
+- The challenge is single-use, so a sniffed exchange can't be replayed — but
+  this is not a substitute for building security; treat it as a convenience key
+  for an already-secured entrance.
+- Unlocking depends only on the shared secret — no clocks, no NTP, no fob
+  `setTime` maintenance.
 - `secrets.h` and `provision.js` are gitignored so no credentials are committed.
 
 ## References

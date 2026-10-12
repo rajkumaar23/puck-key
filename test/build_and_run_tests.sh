@@ -23,4 +23,12 @@ $CXX $FLAGS -o "$out2" boot_state_regression.cpp
 echo "Running ..."
 "$out2"
 
+# 3. BLE challenge-response auth core (state machine + constant-time compare,
+#    HMAC validated against RFC 4231 vectors).
+out3=./auth_core_test
+echo "Building $out3 with $CXX ..."
+$CXX $FLAGS -o "$out3" auth_core_test.cpp
+echo "Running ..."
+"$out3"
+
 echo "ALL TESTS PASSED"

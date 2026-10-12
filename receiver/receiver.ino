@@ -1,11 +1,13 @@
 // puck-key receiver (ESP32)
 // -------------------------
-// A Puck.js fob connects over BLE and writes a time-based rolling code. This
-// sketch verifies it (ble_auth) and, on success, tells SmartRent to unlock the
-// door (smartrent). A persistent TLS socket is kept warm so the unlock is fast.
+// A Puck.js fob connects over BLE, reads a fresh random challenge, and writes
+// back HMAC-SHA256(SECRET, challenge). This sketch verifies it (ble_auth) and,
+// on success, tells SmartRent to unlock the door (smartrent). A persistent TLS
+// socket is kept warm so the unlock is fast.
 //
 //   crypto.*    - HMAC / base32 / TOTP helpers
-//   ble_auth.*  - verify the fob's rolling code
+//   auth_core.* - challenge-response logic (platform-independent, host-tested)
+//   ble_auth.*  - ESP32 glue: TRNG challenge bytes + SECRET
 //   smartrent.* - SmartRent login (+2FA), token refresh, unlock PATCH
 //   config.h    - non-secret tunables      secrets.h - your credentials (gitignored)
 
@@ -85,32 +87,48 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   // A fob connected: note the handle, start a session timer, and warm the socket.
   void onConnect(NimBLEServer* s, NimBLEConnInfo& i) override {
     clientConnected = true;
-    prewarm = true;                 // race the TLS handshake against the BLE write
+    prewarm = true;                 // race the TLS handshake against the BLE exchange
     connHandle = i.getConnHandle();
     tConnect = millis(); Serial.println("---- fob session ----"); stamp("connected"); LED_CONNECTED();
   }
-  // The fob (or the stale-link watchdog) dropped the connection: re-arm advertising.
+  // The fob (or the stale-link watchdog) dropped the connection: drop any
+  // outstanding challenge and re-arm advertising.
   void onDisconnect(NimBLEServer* s, NimBLEConnInfo& i, int reason) override {
     char b[48]; snprintf(b, sizeof(b), "disconnected (reason %d)", reason);
     stamp(b); LED_IDLE();
     clientConnected = false;
+    bleAuthClear();
     needAdvertise = true;
   }
 };
-// GATT callback for the write characteristic: validate the fob's rolling code and,
-// on success, flag an unlock for loop() to perform.
+// GATT callback for the challenge characteristic: NimBLE runs onRead *before*
+// sending the attribute value, so arming here puts a fresh random challenge on
+// the wire in the same ATT read response. Each read supersedes any earlier
+// challenge on this connection.
+class ChalCallbacks : public NimBLECharacteristicCallbacks {
+  void onRead(NimBLECharacteristic* c, NimBLEConnInfo& i) override {
+    bleAuthArm();
+    const uint8_t* chal = bleAuthChallenge();
+    if (chal) c->setValue(chal, 16);
+  }
+};
+// GATT callback for the write characteristic: verify the fob's response to the
+// outstanding challenge and, on success, flag an unlock for loop() to perform.
 class RespCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& i) override {
     NimBLEAttValue v = c->getValue();
-    if (v.length() == 32) {
-      if (bleCodeValid(v.data())) { stamp("authenticated"); doUnlock = true; }
-      else {
-        // Flag only: loop() fires the alert. notifyAlert() must not run from
-        // a GATT callback (TLS stall on the NimBLE task + race on ncore state).
-        stamp("AUTH FAILED (bad/expired code)"); LED_FAIL();
-        authFailed = true;
-      }
-    } else stamp("bad code length");
+    if (bleAuthVerify(v.data(), v.length())) { stamp("authenticated"); doUnlock = true; }
+    else if (v.length() == 32) {
+      // Flag only: loop() fires the alert. notifyAlert() must not run from
+      // a GATT callback (TLS stall on the NimBLE task + race on ncore state).
+      stamp("AUTH FAILED (challenge mismatch)"); LED_FAIL();
+      authFailed = true;
+    }
+    else {
+      // Wrong length says nothing about the secret - log/LED only, no alert
+      // (a passing device could otherwise spam pushes with 1-byte writes).
+      stamp("bad response length"); LED_FAIL();
+    }
   }
 };
 
@@ -140,13 +158,13 @@ void setup() {
     Serial.print(" connected, IP "); Serial.println(WiFi.localIP());
   }
 
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");   // UTC wall clock for tokens + rolling code
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");   // UTC wall clock for the SmartRent 2FA token
   Serial.print("Syncing time");
   for (int i = 0; i < 20 && time(nullptr) < 1000000000; i++) { delay(300); Serial.print("."); }
   Serial.println();
   if (time(nullptr) < 1000000000)
     notifyAlert("ntp", "NTP clock not synced",
-                "rolling-code + TOTP checks will fail until the clock is set", 60);
+                "SmartRent 2FA login will fail until the clock is set", 60);
 
   smartrentLogin();   // grab a token now so the first press is already fast
   if (smartrentHasToken()) {
@@ -165,7 +183,10 @@ void setup() {
   server->setCallbacks(new ServerCallbacks());
   server->advertiseOnDisconnect(false);
   NimBLEService* svc = server->createService(SERVICE_UUID);
-  // Single write-only characteristic: the fob writes its 32-byte rolling code here.
+  // CHAL: the fob reads it to get a fresh 16-byte challenge (armed in onRead,
+  // so NimBLE sends the value it just generated). RESP: the fob writes
+  // HMAC-SHA256(SECRET, challenge) - 32 bytes - to authenticate.
+  svc->createCharacteristic(CHAL_UUID, NIMBLE_PROPERTY::READ)->setCallbacks(new ChalCallbacks());
   svc->createCharacteristic(RESP_UUID, NIMBLE_PROPERTY::WRITE)->setCallbacks(new RespCallbacks());
   svc->start();
   // Advertise connectable but anonymous (no name, no service UUID in the ad).
@@ -220,8 +241,8 @@ void loop() {
   if (doUnlock)      { doUnlock = false;      performUnlock(); }
   if (authFailed) {
     authFailed = false;
-    notifyAlert("auth", "fob rejected: bad or expired rolling code",
-                "check the fob clock (re-run provisioning setTime) or SECRET", 60);
+    notifyAlert("auth", "fob rejected: wrong response to the challenge",
+                "check the fob's SECRET matches the receiver's", 60);
   }
 
 #ifdef HEARTBEAT_URL
