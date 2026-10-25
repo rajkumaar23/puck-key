@@ -41,9 +41,19 @@ function hmacSha256(keyStr, msgBytes) {
 }
 
 var busy = false, busySince = 0, gatt = null;
+// Watchdog for a session whose GATT chain never settles (Espruino can leave a
+// GATT request pending forever: no resolve, no reject). Mirrors the receiver's
+// stale-link watchdog from the fob side.
+var SESSION_TIMEOUT_MS = 3000;
+var session = 0, watchdog = null;
 
-// Drop any half-open connection and clear the busy flag.
+function dropWatchdog() { if (watchdog) { clearTimeout(watchdog); watchdog = null; } }
+
+// Drop any half-open connection, retire the current session (so a hung chain
+// that settles late is ignored), and clear the busy flag.
 function cleanup() {
+  session++;                          // invalidate any in-flight chain
+  dropWatchdog();
   if (gatt) { try { gatt.disconnect(); } catch (e) {} gatt = null; }
   busy = false;
 }
@@ -55,12 +65,25 @@ function unlock() {
   if (busy && (getTime() - busySince) > 5) cleanup();   // stale lock -> force reset
   if (busy) return;
   busy = true; busySince = getTime();
+  var me = ++session;                 // this session's token; stale chains check it
   digitalWrite(LED2, 1);
+  dropWatchdog();
+  watchdog = setTimeout(function() {
+    if (me !== session) return;       // already retired by success/failure path
+    print("auth timeout - dropping session");
+    digitalWrite(LED2, 0); digitalPulse(LED1, 1, 500);
+    cleanup();
+  }, SESSION_TIMEOUT_MS);
   var chalCh = null, respCh = null;
   NRF.connect(DOOR, { minInterval: 7.5, maxInterval: 11.25 }).then(function(g) {
+    if (me !== session) {              // retired while connect was in flight: drop the orphan
+      try { g.disconnect(); } catch (e) {}
+      return Promise.reject("stale session");
+    }
     gatt = g;
     return gatt.getPrimaryService(SERVICE);
   }).then(function(s) {
+    if (me !== session) return Promise.reject("stale session");
     // Sequential, not Promise.all: Espruino's GATT client runs one discovery
     // task at a time and rejects a parallel characteristic request
     // ("BLE task CHAR is already in progress").
@@ -71,8 +94,10 @@ function unlock() {
       respCh = rc;
     });
   }).then(function() {
+    if (me !== session) return Promise.reject("stale session");
     return chalCh.readValue();
   }).then(function(v) {
+    if (me !== session) return Promise.reject("stale session");
     // readValue() resolves with a plain ArrayBuffer on Espruino; accept the
     // ArrayBufferView shape too for robustness.
     var chal = (v instanceof ArrayBuffer)
@@ -83,11 +108,16 @@ function unlock() {
     if (resp.length !== RESP_LEN) throw "bad response length";
     return respCh.writeValue(resp);
   }).then(function() {
-    return gatt.disconnect();
+    if (me !== session) return Promise.reject("stale session");
+    return gatt.disconnect();          // watchdog stays armed: disconnect can hang too
   }).then(function() {
+    if (me !== session) return;
+    dropWatchdog();
     digitalWrite(LED2, 0); digitalPulse(LED2, 1, 200);
     gatt = null; busy = false;
   }).catch(function(e) {
+    if (me !== session) return;
+    dropWatchdog();
     digitalWrite(LED2, 0); digitalPulse(LED1, 1, 500);
     print(e);
     cleanup();
