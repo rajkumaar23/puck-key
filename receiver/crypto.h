@@ -15,3 +15,7 @@ void counterBytes(uint64_t counter, uint8_t out[8]);
 
 // Current TOTP (RFC 6238, SHA1, 6 digits, 30s step) from a base32 seed. "" on error.
 String totpNow(const char* base32Secret);
+
+// TOTP as it will be at wall-clock time `epoch` (lets the 2FA step retry at
+// ±30 s to tolerate clock drift without re-reading the clock mid-retry).
+String totpAt(const char* base32Secret, time_t epoch);

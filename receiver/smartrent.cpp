@@ -8,10 +8,12 @@
 #include "secrets.h"
 #include "crypto.h"
 #include "notify.h"
+#include "metrics.h"
 
 static String srToken = "";
 static time_t srTokenExp = 0;    // epoch seconds when the current access token expires
-static WiFiClientSecure srNet;   // persistent TLS socket, kept warm for fast unlocks
+static WiFiClientSecure srNet;   // persistent TLS socket, warmed on fob connect for fast unlocks
+static uint32_t srFailStreak = 0;  // consecutive failed logins since the last success
 
 // Browser-ish headers every SmartRent request needs to get past Cloudflare.
 static void srCommonHeaders(HTTPClient& http) {
@@ -49,19 +51,36 @@ static time_t parseJwtExp(const String& jwt) {
   return (time_t)strtoll(p + 6, nullptr, 10);
 }
 
-// Complete SmartRent's 2FA step: exchange the tfa_api_token + current TOTP for a token.
-static String completeTfa(const String& tfaApiToken) {
-  String code = totpNow(SR_TFA_SECRET);
-  if (code == "") { Serial.println("[auth] TOTP generation failed (bad seed or clock)"); return ""; }
-  Serial.printf("[auth] TOTP=%s  clock=%ld\n", code.c_str(), (long)time(nullptr));
-  WiFiClientSecure c; c.setInsecure();
+// One attempt of SmartRent's 2FA step: tfa_api_token + a TOTP code -> token.
+static String tfaAttempt(const String& tfaApiToken, const String& code, int* statusOut) {
   HTTPClient http;
-  if (!http.begin(c, String(SR_BASE_URL) + "/authentication/sessions/tfa")) return "";
+  WiFiClientSecure c; c.setInsecure();
+  if (!http.begin(c, String(SR_BASE_URL) + "/authentication/sessions/tfa")) { *statusOut = -1; return ""; }
   srCommonHeaders(http);
   int status = http.POST(String("{\"tfa_api_token\":\"") + tfaApiToken + "\",\"token\":\"" + code + "\"}");
   String tok = (status == 200 || status == 201) ? extractStr(http.getString(), "access_token") : "";
   http.end();
+  *statusOut = status;
+  return tok;
+}
+
+// Complete SmartRent's 2FA step. On a 401 (wrong code) retry at ±30 s: an NTP
+// drift of half a TOTP window otherwise fails every login until re-sync.
+static String completeTfa(const String& tfaApiToken) {
+  const int offsets[] = TOTP_RETRY_OFFSETS;
+  time_t now = time(nullptr);
+  String code = totpAt(SR_TFA_SECRET, now);
+  if (code == "") { mTfaStatus = -1; Serial.println("[auth] TOTP generation failed (bad seed or clock)"); return ""; }
+  Serial.printf("[auth] TOTP generated (%d digits)  clock=%ld\n", code.length(), (long)now);
+  int status = -1;
+  String tok = tfaAttempt(tfaApiToken, code, &status);
   Serial.printf("[auth] tfa -> HTTP %d  token=%s\n", status, tok == "" ? "MISSING" : "ok");
+  for (size_t i = 0; tok == "" && status == 401 && i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+    Serial.printf("[auth] tfa retry at %+d s clock offset (drift guard)\n", offsets[i]);
+    tok = tfaAttempt(tfaApiToken, totpAt(SR_TFA_SECRET, now + offsets[i]), &status);
+    Serial.printf("[auth] tfa -> HTTP %d  token=%s\n", status, tok == "" ? "MISSING" : "ok");
+  }
+  mTfaStatus = status;
   return tok;
 }
 
@@ -70,12 +89,13 @@ static int patchUnlock() {
   bool warm = srNet.connected();
   if (!warm) smartrentPrewarm();          // fall back to a cold handshake if it wasn't warmed
   if (!srNet.connected()) return -1;
+  if (warm) mUnlockWarm++; else mUnlockCold++;
 
   unsigned long a = millis();
   String body = "{\"attributes\":[{\"name\":\"locked\",\"state\":\"false\"}]}";
   // Write straight to the warm TLS socket. "Connection: close" means the server
-  // hangs up after replying, so there's no body to drain; the loop's keep-warm
-  // reopens the socket a moment later for the next press.
+  // hangs up after replying, so there's no body to drain; the on-connect
+  // prewarm reopens the socket for the next press.
   srNet.print(String("PATCH /api/v3/hubs/") + SR_HUB_ID + "/devices/" + SR_DEVICE_ID + " HTTP/1.1\r\n");
   srNet.print("Host: " SR_HOST "\r\n");
   srNet.print("User-Agent: " SR_USER_AGENT "\r\n");
@@ -94,6 +114,7 @@ static int patchUnlock() {
   int code = -1, sp = line.indexOf(' ');
   if (sp > 0) code = line.substring(sp + 1, sp + 4).toInt();
   srNet.stop();
+  mUnlockLastMs = millis() - a;
   Serial.printf("[unlock] PATCH over %s socket -> %lu ms\n", warm ? "warm" : "cold", millis() - a);
   return code;
 }
@@ -105,13 +126,15 @@ void smartrentBegin() {
 
 // Log in (handling 2FA) and cache the access token and its expiry. True on success.
 bool smartrentLogin() {
+  mLogins++;
   WiFiClientSecure c; c.setInsecure();
   HTTPClient http;
-  if (!http.begin(c, String(SR_BASE_URL) + "/authentication/sessions")) return false;
+  if (!http.begin(c, String(SR_BASE_URL) + "/authentication/sessions")) { mSessionsStatus = -1; return false; }
   srCommonHeaders(http);
   int code = http.POST(String("{\"email\":\"") + SR_EMAIL + "\",\"password\":\"" + SR_PASS + "\"}");
   String body = (code == 200 || code == 201) ? http.getString() : "";
   http.end();
+  mSessionsStatus = code;
   Serial.printf("[auth] sessions -> HTTP %d\n", code);
 
   srToken = extractStr(body, "access_token");           // no 2FA -> token straight away
@@ -121,36 +144,69 @@ bool smartrentLogin() {
     if (tfa != "") srToken = completeTfa(tfa);
   }
   srTokenExp = (srToken != "") ? parseJwtExp(srToken) : 0;
-  return srToken != "";
+  mTokenExp = srTokenExp;
+  if (srToken != "") {
+    srFailStreak = 0; mBackoffS = 0;
+    mLastLoginOk = time(nullptr);
+    return true;
+  }
+  mLoginFails++;
+  return false;
 }
 
 // Whether a non-empty access token is currently cached.
 bool smartrentHasToken() { return srToken != ""; }
 
+// Snapshot of the last login outcome for alert text and console: which step
+// failed with which HTTP code, when login last worked, and current heap.
+String smartrentDiag() {
+  char b[160];
+  char okBuf[24];
+  if (mLastLoginOk == 0) snprintf(okBuf, sizeof(okBuf), "never");
+  else snprintf(okBuf, sizeof(okBuf), "%lds ago", (long)(time(nullptr) - (time_t)mLastLoginOk));
+  snprintf(b, sizeof(b), "sessions=HTTP %d, tfa=HTTP %d, last ok: %s, heap=%lu, fail streak=%lu",
+           mSessionsStatus, mTfaStatus, okBuf, (unsigned long)ESP.getFreeHeap(),
+           (unsigned long)srFailStreak);
+  return String(b);
+}
+
 // Open the persistent TLS socket if it isn't already (the expensive handshake).
 void smartrentPrewarm() {
   if (srNet.connected()) return;
   unsigned long t0 = millis();
-  if (srNet.connect(SR_HOST, 443)) Serial.printf("[tls] warmed (%lu ms)\n", millis() - t0);
-  else Serial.printf("[tls] warm failed (%lu ms)\n", millis() - t0);
+  if (srNet.connect(SR_HOST, 443)) {
+    mTlsWarms++; mTlsLastMs = millis() - t0;
+    Serial.printf("[tls] warmed (%lu ms)\n", millis() - t0);
+  } else {
+    mTlsFails++;
+    Serial.printf("[tls] warm failed (%lu ms)\n", millis() - t0);
+  }
 }
 
 // Whether the persistent TLS socket is currently connected.
 bool smartrentSocketOpen() { return srNet.connected(); }
 
-// Ensure a token, send the unlock PATCH, and retry once if the token had expired.
+// Ensure a fresh token, send the unlock PATCH, and retry once if the token had
+// expired mid-flight.
 int smartrentUnlock() {
-  if (srToken == "") smartrentLogin();     // normally kept fresh by the loop; safety net
+  time_t now = time(nullptr);
+  bool expired = (srToken == "") ||
+                 (now > 1000000000 && srTokenExp > 0 && now >= srTokenExp);
+  if (expired) smartrentLogin();     // user-press path: login now, ignore the idle-refresh backoff
   int code = patchUnlock();
-  if (code == 401) {                        // token expired mid-flight -> refresh and retry once
+  mUnlockTotal++;
+  if (code == 401) {                 // token expired mid-flight -> refresh and retry once
     Serial.println("[unlock] token expired - refreshing");
     if (smartrentLogin()) code = patchUnlock();
   }
+  if (code == 200) mUnlockOk++; else mUnlockFail++;
   return code;
 }
 
 // Refresh the token ahead of expiry so an unlock never pays a login cost. Frees
 // the warm socket first so the login handshake has heap. Call while idle.
+// Repeated failures back off exponentially (see tokenBackoffMs): hammering a
+// Cloudflare-throttled endpoint only keeps the block alive.
 void smartrentMaintainToken() {
   static unsigned long lastAttempt = 0;
   time_t now = time(nullptr);
@@ -158,15 +214,19 @@ void smartrentMaintainToken() {
   bool needs = (srToken == "") ||
                (srTokenExp > 0 && now >= srTokenExp - TOKEN_REFRESH_MARGIN);
   if (!needs) return;
-  if (lastAttempt && millis() - lastAttempt < 10000) return;      // back off on repeated failures
+  if (lastAttempt && millis() - lastAttempt < tokenBackoffMs(srFailStreak)) return;
   lastAttempt = millis();
-  Serial.printf("[token] refreshing (free heap=%u)\n", ESP.getFreeHeap());
+  Serial.printf("[token] refreshing (free heap=%u, next retry in %lu s if this fails)\n",
+                ESP.getFreeHeap(), tokenBackoffMs(srFailStreak + 1) / 1000UL);
   srNet.stop();   // free the warm socket's TLS memory so the login handshake has room
   if (smartrentLogin()) {
     Serial.printf("[token] refreshed, valid for %ld s\n", (long)(srTokenExp - now));
   } else {
-    Serial.println("[token] refresh FAILED");
+    srFailStreak++;
+    mBackoffS = tokenBackoffMs(srFailStreak) / 1000UL;
+    Serial.printf("[token] refresh FAILED (backing off %lu s)\n", (unsigned long)mBackoffS);
     notifyAlert("login", "SmartRent login failing",
-                "token expired and refresh keeps failing - unlocks will 401 until fixed (creds, TFA seed, Cloudflare?)", 15);
+                (String("token expired and refresh keeps failing - unlocks will 401 until fixed (") +
+                 smartrentDiag().c_str() + ")").c_str(), 15);
   }
 }

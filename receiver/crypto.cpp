@@ -51,13 +51,13 @@ void counterBytes(uint64_t counter, uint8_t out[8]) {
   for (int i = 7; i >= 0; i--) { out[i] = counter & 0xFF; counter >>= 8; }
 }
 
-// Compute the current 6-digit TOTP from a base32 seed (SmartRent 2FA).
-String totpNow(const char* base32Secret) {
+// Compute the 6-digit TOTP for wall-clock time `epoch` from a base32 seed.
+String totpAt(const char* base32Secret, time_t epoch) {
   uint8_t key[64];
   int keyLen = base32Decode(base32Secret, key, sizeof(key));
   if (keyLen <= 0) return "";
   uint8_t msg[8];
-  counterBytes((uint64_t)(time(nullptr) / 30), msg);
+  counterBytes((uint64_t)(epoch / 30), msg);
   uint8_t hmac[20];
   hmacSha1(key, keyLen, msg, 8, hmac);
   int off = hmac[19] & 0x0F;
@@ -66,4 +66,9 @@ String totpNow(const char* base32Secret) {
   char buf[7];
   snprintf(buf, sizeof(buf), "%06u", (unsigned)(bin % 1000000));
   return String(buf);
+}
+
+// Compute the current 6-digit TOTP from a base32 seed (SmartRent 2FA).
+String totpNow(const char* base32Secret) {
+  return totpAt(base32Secret, time(nullptr));
 }

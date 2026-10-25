@@ -1,7 +1,8 @@
 #pragma once
 // SmartRent cloud client: login (+ 2FA TOTP), token refresh, and the unlock PATCH,
-// sent over a persistent TLS socket that's kept warm so an unlock is just the
-// ~200 ms request instead of paying a ~900 ms handshake.
+// sent over a persistent TLS socket that's warmed on fob connect so an unlock is
+// just the ~200 ms request instead of paying a ~900 ms handshake.
+#include <Arduino.h>   // String
 
 void smartrentBegin();          // one-time init (TLS setInsecure on the persistent socket)
 bool smartrentLogin();          // login (+2FA); caches the access token; true on success
@@ -10,3 +11,4 @@ int  smartrentUnlock();         // ensure token -> send unlock PATCH (retries on
 void smartrentPrewarm();        // open the persistent TLS socket if it isn't already
 bool smartrentSocketOpen();     // is the persistent socket connected?
 void smartrentMaintainToken();  // refresh the token ahead of expiry (call while idle)
+String smartrentDiag();         // last-outcome snapshot for alert text: steps, HTTP codes, heap

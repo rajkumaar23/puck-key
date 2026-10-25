@@ -2,8 +2,9 @@
 // -------------------------
 // A Puck.js fob connects over BLE, reads a fresh random challenge, and writes
 // back HMAC-SHA256(SECRET, challenge). This sketch verifies it (ble_auth) and,
-// on success, tells SmartRent to unlock the door (smartrent). A persistent TLS
-// socket is kept warm so the unlock is fast.
+// on success, tells SmartRent to unlock the door (smartrent). The TLS socket to
+// SmartRent is warmed the instant a fob connects, so the handshake finishes
+// behind the BLE auth exchange and the unlock is just the request itself.
 //
 //   crypto.*    - HMAC / base32 / TOTP helpers
 //   auth_core.* - challenge-response logic (platform-independent, host-tested)
@@ -21,6 +22,7 @@
 #include "smartrent.h"
 #include "ble_auth.h"
 #include "notify.h"
+#include "metrics.h"
 
 Adafruit_NeoPixel pixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 // Drive the on-board NeoPixel to a solid color (status indicator).
@@ -39,6 +41,7 @@ volatile bool authFailed = false;      // set by onWrite -> loop() fires the ale
 volatile bool clientConnected = false;
 unsigned long tConnect = 0;
 uint16_t connHandle = 0;
+bool staleKicked = false;              // one stale-watchdog count/log per connection
 
 // Log a labelled timestamp relative to the start of the current fob session.
 void stamp(const char* label) {
@@ -89,6 +92,8 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     clientConnected = true;
     prewarm = true;                 // race the TLS handshake against the BLE exchange
     connHandle = i.getConnHandle();
+    staleKicked = false;
+    mBleSessions++;
     tConnect = millis(); Serial.println("---- fob session ----"); stamp("connected"); LED_CONNECTED();
   }
   // The fob (or the stale-link watchdog) dropped the connection: drop any
@@ -97,6 +102,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     char b[48]; snprintf(b, sizeof(b), "disconnected (reason %d)", reason);
     stamp(b); LED_IDLE();
     clientConnected = false;
+    mLastDiscReason = reason;
     bleAuthClear();
     needAdvertise = true;
   }
@@ -117,17 +123,19 @@ class ChalCallbacks : public NimBLECharacteristicCallbacks {
 class RespCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& i) override {
     NimBLEAttValue v = c->getValue();
-    if (bleAuthVerify(v.data(), v.length())) { stamp("authenticated"); doUnlock = true; }
+    if (bleAuthVerify(v.data(), v.length())) { stamp("authenticated"); mBleAuthOk++; doUnlock = true; }
     else if (v.length() == 32) {
       // Flag only: loop() fires the alert. notifyAlert() must not run from
       // a GATT callback (TLS stall on the NimBLE task + race on ncore state).
       stamp("AUTH FAILED (challenge mismatch)"); LED_FAIL();
+      mBleAuthFail++;
       authFailed = true;
     }
     else {
       // Wrong length says nothing about the secret - log/LED only, no alert
       // (a passing device could otherwise spam pushes with 1-byte writes).
       stamp("bad response length"); LED_FAIL();
+      mBleBadLen++;
     }
   }
 };
@@ -172,7 +180,8 @@ void setup() {
   } else {
     Serial.println("SmartRent login FAILED");
     notifyAlert("login", "SmartRent login failed at boot",
-                "credentials, TFA seed, or Cloudflare block? unlocks will stay broken", 15);
+                (String("credentials, TFA seed, or Cloudflare block? unlocks will stay broken (") +
+                 smartrentDiag().c_str() + ")").c_str(), 15);
   }
 
   NimBLEDevice::init("");            // no advertised name -> nothing for scanners to identify
@@ -254,13 +263,16 @@ void loop() {
   }
 #endif
 
-  // Keep the TLS socket hot while idle so an unlock is just the ~200 ms request.
-  static unsigned long lastWarm = 0;
-  if (!clientConnected && WiFi.status() == WL_CONNECTED && !smartrentSocketOpen() &&
-      millis() - lastWarm > 5000) {
-    lastWarm = millis();
-    smartrentPrewarm();
+#ifdef PUSHGATEWAY_URL
+  // Export current counters to the Pushgateway so Grafana can watch login
+  // health, token age, unlock latency, and heap over time.
+  static unsigned long lastMetrics = 0;
+  if (!clientConnected && WiFi.status() == WL_CONNECTED &&
+      (lastMetrics == 0 || millis() - lastMetrics > METRICS_INTERVAL)) {
+    lastMetrics = millis();
+    metricsPush();
   }
+#endif
 
   static unsigned long lastBeat = 0;
   if (millis() - lastBeat > 3000) {
@@ -269,7 +281,11 @@ void loop() {
                   NimBLEDevice::getAdvertising()->isAdvertising(), clientConnected);
   }
   if (clientConnected && millis() - tConnect > BLE_STALE_MS) {   // dead link -> drop it
-    Serial.println("stale connection - forcing disconnect");
+    if (!staleKicked) {                // one count + log per connection, not per loop pass
+      staleKicked = true;
+      mStaleKicks++;
+      Serial.println("stale connection - forcing disconnect");
+    }
     NimBLEDevice::getServer()->disconnect(connHandle);           // fires onDisconnect -> re-advertise
   }
   if (!clientConnected && !NimBLEDevice::getAdvertising()->isAdvertising()) {
