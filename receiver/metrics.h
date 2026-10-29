@@ -18,6 +18,8 @@ extern volatile int      mLastDiscReason;   // last BLE disconnect reason code
 extern volatile uint32_t mUnlockTotal, mUnlockOk, mUnlockFail;
 extern volatile uint32_t mUnlockWarm, mUnlockCold;   // PATCH over warm vs cold socket
 extern volatile uint32_t mUnlockLastMs;              // duration of the last PATCH
+extern volatile uint32_t mE2eLastMs, mE2eMaxMs;      // click->unlock (fob delta + receiver span)
+extern volatile uint32_t mClickToConnectMs;          // last fob-reported click->connected (0xFFFF = none)
 
 // ---- Login / token (smartrent.cpp) ----------------------------------------------
 extern volatile uint32_t mLogins, mLoginFails;

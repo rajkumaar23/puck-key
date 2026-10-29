@@ -15,6 +15,7 @@ var DOOR   = cfg.door;
 var SERVICE = "f1e2d3c4-0001-4a5b-8c9d-000000000001";
 var CHAL    = "f1e2d3c4-0002-4a5b-8c9d-000000000001";  // read:   fob -> receiver, 16-byte fresh challenge
 var RESP    = "f1e2d3c4-0003-4a5b-8c9d-000000000001";  // write:  fob -> receiver, 32-byte HMAC response
+var STAT    = "f1e2d3c4-0004-4a5b-8c9d-000000000001";  // write:  fob -> receiver, uint16 LE click->connected ms
 var CHAL_LEN = 16;    // challenge length in bytes
 var RESP_LEN = 32;    // response length in bytes (full HMAC-SHA256)
 
@@ -65,6 +66,7 @@ function unlock() {
   if (busy && (getTime() - busySince) > 5) cleanup();   // stale lock -> force reset
   if (busy) return;
   busy = true; busySince = getTime();
+  var tClick = getTime();             // wall of this press: button -> connected delta
   var me = ++session;                 // this session's token; stale chains check it
   digitalWrite(LED2, 1);
   dropWatchdog();
@@ -74,12 +76,13 @@ function unlock() {
     digitalWrite(LED2, 0); digitalPulse(LED1, 1, 500);
     cleanup();
   }, SESSION_TIMEOUT_MS);
-  var chalCh = null, respCh = null;
+  var chalCh = null, respCh = null, statCh = null, resp = null, clickMs = 0;
   NRF.connect(DOOR, { minInterval: 7.5, maxInterval: 11.25 }).then(function(g) {
     if (me !== session) {              // retired while connect was in flight: drop the orphan
       try { g.disconnect(); } catch (e) {}
       return Promise.reject("stale session");
     }
+    clickMs = Math.min(65534, Math.round((getTime() - tClick) * 1000));   // 0xFFFF reserved: "no STAT"
     gatt = g;
     return gatt.getPrimaryService(SERVICE);
   }).then(function(s) {
@@ -92,6 +95,9 @@ function unlock() {
       return s.getCharacteristic(RESP);
     }).then(function(rc) {
       respCh = rc;
+      return s.getCharacteristic(STAT).catch(function() { statCh = null; });   // telemetry leg is optional
+    }).then(function(sc) {
+      if (sc) statCh = sc;
     });
   }).then(function() {
     if (me !== session) return Promise.reject("stale session");
@@ -104,8 +110,14 @@ function unlock() {
       ? new Uint8Array(v)
       : new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
     if (chal.length !== CHAL_LEN) throw "bad challenge length";
-    var resp = new Uint8Array(hmacSha256(SECRET, chal));
+    resp = new Uint8Array(hmacSha256(SECRET, chal));
     if (resp.length !== RESP_LEN) throw "bad response length";
+    // Latency telemetry first (uint16 LE) so it is in place before the
+    // receiver starts the unlock timer. Telemetry only: never blocks the door.
+    var st = new Uint8Array([clickMs & 0xFF, (clickMs >> 8) & 0xFF]);
+    return statCh ? statCh.writeValue(st).catch(function() {}) : undefined;
+  }).then(function() {
+    if (me !== session) return Promise.reject("stale session");
     return respCh.writeValue(resp);
   }).then(function() {
     if (me !== session) return Promise.reject("stale session");

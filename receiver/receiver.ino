@@ -69,8 +69,18 @@ void performUnlock() {
     return;
   }
   int code = smartrentUnlock();
-  Serial.printf("[+%5lu ms] smartrent PATCH -> HTTP %d\n", millis() - tConnect, code);
+  unsigned long spanMs = millis() - tConnect;   // connected -> PATCH settled
+  uint32_t statSnap = mClickToConnectMs;        // one consistent read: GATT task may reset it mid-PATCH
+  Serial.printf("[+%5lu ms] smartrent PATCH -> HTTP %d\n", spanMs, code);
   if (code == 200) {
+    if (statSnap != 0xFFFF) {                   // fob-reported click->connected + our span
+      uint32_t e2e = (uint32_t)spanMs + statSnap;
+      mE2eLastMs = e2e;
+      if (e2e > mE2eMaxMs) mE2eMaxMs = e2e;
+      Serial.printf("[+%5lu ms] e2e (fob click -> API 200: %lu + %u)\n", e2e, spanMs, (unsigned)statSnap);
+    } else {
+      Serial.println("e2e: fob sent no STAT (click->connected unknown)");
+    }
     LED_SUCCESS();
     notifyRecovered("unlock", "unlock OK (recovered)");
     notifyRecovered("auth", "fob auth OK (recovered)");
@@ -93,6 +103,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     prewarm = true;                 // race the TLS handshake against the BLE exchange
     connHandle = i.getConnHandle();
     staleKicked = false;
+    mClickToConnectMs = 0xFFFF;       // fresh session: fob must re-report its click delta
     mBleSessions++;
     tConnect = millis(); Serial.println("---- fob session ----"); stamp("connected"); LED_CONNECTED();
   }
@@ -136,6 +147,18 @@ class RespCallbacks : public NimBLECharacteristicCallbacks {
       // (a passing device could otherwise spam pushes with 1-byte writes).
       stamp("bad response length"); LED_FAIL();
       mBleBadLen++;
+    }
+  }
+};
+// GATT callback for the latency characteristic: the fob reports (uint16 LE,
+// milliseconds) from its button press to GAP-connected. Written BEFORE RESP so
+// it is always in place when performUnlock() composes the e2e number.
+class StatCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& i) override {
+    NimBLEAttValue v = c->getValue();
+    if (v.length() == 2) {
+      mClickToConnectMs = (uint32_t)(uint8_t)v[0] | ((uint32_t)(uint8_t)v[1] << 8);
+      stamp("stat click->connected received");
     }
   }
 };
@@ -197,6 +220,7 @@ void setup() {
   // HMAC-SHA256(SECRET, challenge) - 32 bytes - to authenticate.
   svc->createCharacteristic(CHAL_UUID, NIMBLE_PROPERTY::READ)->setCallbacks(new ChalCallbacks());
   svc->createCharacteristic(RESP_UUID, NIMBLE_PROPERTY::WRITE)->setCallbacks(new RespCallbacks());
+  svc->createCharacteristic(STAT_UUID, NIMBLE_PROPERTY::WRITE)->setCallbacks(new StatCallbacks());
   svc->start();
   // Advertise connectable but anonymous (no name, no service UUID in the ad).
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();

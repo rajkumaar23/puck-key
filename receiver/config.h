@@ -36,6 +36,7 @@ inline unsigned long tokenBackoffMs(uint32_t failStreak) {
 #define SERVICE_UUID "f1e2d3c4-0001-4a5b-8c9d-000000000001"
 #define CHAL_UUID    "f1e2d3c4-0002-4a5b-8c9d-000000000001"  // fob reads the 16-byte challenge here
 #define RESP_UUID    "f1e2d3c4-0003-4a5b-8c9d-000000000001"  // fob writes HMAC(SECRET, challenge) here
+#define STAT_UUID    "f1e2d3c4-0004-4a5b-8c9d-000000000001"  // fob writes uint16 LE: click->connected ms
 #define BLE_STALE_MS 4000  // drop a fob connection that lingers this long without authing
 
 // ---- Uptime heartbeat --------------------------------------------------------

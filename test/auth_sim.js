@@ -20,6 +20,7 @@ var PUCK_PATH = path.join(ROOT, "fob", "puck.js");
 var SERVICE = "f1e2d3c4-0001-4a5b-8c9d-000000000001";
 var CHAL    = "f1e2d3c4-0002-4a5b-8c9d-000000000001";
 var RESP    = "f1e2d3c4-0003-4a5b-8c9d-000000000001";
+var STAT    = "f1e2d3c4-0004-4a5b-8c9d-000000000001";  // uint16 LE click->connected ms (telemetry)
 
 var SECRET = "test-secret-do-not-use-in-production";
 var WRONG_SECRET = "totally-wrong-secret-key";
@@ -71,6 +72,8 @@ Receiver.prototype.connect = function () {
     disconnected: false,
     disconnects: 0,
     lastWrite: null,
+    writes: [],           // ordered GATT write log: {kind:"stat"|"resp"}
+    lastStatMs: null,     // decoded uint16 click->connected from the fob
     writeRejected: false
   };
   conn.readChallenge = function () {
@@ -87,6 +90,7 @@ Receiver.prototype.connect = function () {
     if (conn.disconnected) return Promise.reject(new Error("disconnected"));
     return delay(L.op, function () {
       self.lastError = null;
+      conn.writes.push({ kind: "resp" });
       var got = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
       if (got.length !== 32) {
         self.rejects.length++; self.lastError = "bad length " + got.length;
@@ -117,6 +121,21 @@ Receiver.prototype.connect = function () {
       });
     });
   };
+  conn.writeStat = function (v) {
+    if (conn.disconnected) return Promise.reject(new Error("disconnected"));
+    if (self.failNextStat) {
+      self.failNextStat = false;
+      return delay(L.op, function () { throw new Error("simulated stat write failure"); });
+    }
+    return delay(L.op, function () {
+      var u = (v instanceof ArrayBuffer)
+        ? new Uint8Array(v)
+        : new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+      if (u.length !== 2) throw new Error("stat must be 2 bytes");
+      conn.writes.push({ kind: "stat", ms: u[0] | (u[1] << 8) });
+      conn.lastStatMs = u[0] | (u[1] << 8);
+    });
+  };
   conn.disconnect = function () {
     return delay(L.op, function () {
       conn.disconnects++;
@@ -145,7 +164,7 @@ Receiver.prototype.getPrimaryService = function (uuid) {
         self._conn._charBusy = true;
         var done = function () { self._conn._charBusy = false; };
         var inner;
-        if (cuuid !== CHAL && cuuid !== RESP) {
+        if (cuuid !== CHAL && cuuid !== RESP && cuuid !== STAT) {
           inner = delay(L.op, function () { throw new Error("no char"); });
         } else {
           inner = delay(L.op, function () {
@@ -156,6 +175,7 @@ Receiver.prototype.getPrimaryService = function (uuid) {
                 return self._conn.readChallenge();
               },
               writeValue: function (v) {
+                if (cuuid === STAT) return self._conn.writeStat(v);
                 if (cuuid !== RESP) return delay(L.op, function () { throw new Error("not writable"); });
                 return self._conn.writeResponse(v);
               }
@@ -322,6 +342,13 @@ function runHappyPaths(n) {
         if (!r.unlocked || !r.green || r.red || r.conn.disconnects !== 1) {
           failures.push("happy path session (unlock=" + r.unlocked + " green=" + r.green +
             " red=" + r.red + " disconnects=" + r.conn.disconnects + ")");
+        }
+        var w = r.conn.writes || [];
+        if (!(w.length === 2 && w[0].kind === "stat" && w[1].kind === "resp")) {
+          failures.push("stat must precede resp, got " + JSON.stringify(w.map(function (x) { return x.kind; })));
+        }
+        if (!(r.conn.lastStatMs >= L.connect - 2 && r.conn.lastStatMs < 3000)) {
+          failures.push("implausible click->connected ms: " + r.conn.lastStatMs);
         }
       });
     });
@@ -512,11 +539,27 @@ function runHmacParity() {
   check("hex string key >64 bytes", ctEq(got, want));
 }
 
+// STAT is telemetry: a receiver-side STAT write failure must never block unlock.
+function runStatFailure() {
+  console.log("\n[4] STAT telemetry-failure tolerance");
+  var receiver = new Receiver(SECRET);
+  var fob = makeFob(SECRET, receiver);
+  receiver.failNextStat = true;
+  return press(fob).then(function (r) {
+    check("unlock succeeds despite STAT write failure",
+      r.unlocked && r.green && !r.red,
+      "unlocked=" + r.unlocked + " green=" + r.green + " red=" + r.red);
+    check("no stat recorded on failed write", r.conn.lastStatMs === null,
+      "lastStatMs=" + r.conn.lastStatMs);
+  });
+}
+
 // ---------------------------------------------------------------------------
 function main() {
   console.log("puck-key auth sim — read-based challenge, full 32-byte response");
   return runHappyPaths(30)
     .then(function (happy) { return runAdversarial(happy); })
+    .then(function () { return runStatFailure(); })
     .then(function () { runHmacParity(); })
     .then(function () {
       console.log("");

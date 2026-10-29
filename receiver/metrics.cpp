@@ -20,6 +20,7 @@
 volatile uint32_t mBleSessions, mBleAuthOk, mBleAuthFail, mBleBadLen, mStaleKicks;
 volatile int      mLastDiscReason;
 volatile uint32_t mUnlockTotal, mUnlockOk, mUnlockFail, mUnlockWarm, mUnlockCold, mUnlockLastMs;
+volatile uint32_t mE2eLastMs, mE2eMaxMs, mClickToConnectMs = 0xFFFF;
 volatile uint32_t mLogins, mLoginFails;
 volatile int      mSessionsStatus, mTfaStatus;
 volatile time_t   mLastLoginOk, mTokenExp;
@@ -59,6 +60,8 @@ void metricsPush() {
   line(b, "puck_unlock_socket_total", "state=\"warm\"", mUnlockWarm);
   line(b, "puck_unlock_socket_total", "state=\"cold\"", mUnlockCold);
   line(b, "puck_unlock_last_ms", nullptr, mUnlockLastMs);
+  line(b, "puck_unlock_e2e_last_ms", nullptr, mE2eLastMs);
+  line(b, "puck_unlock_e2e_max_ms", nullptr, mE2eMaxMs);
 
   line(b, "puck_sr_logins_total", nullptr, mLogins);
   line(b, "puck_sr_login_failures_total", nullptr, mLoginFails);
